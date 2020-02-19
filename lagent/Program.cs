@@ -11,10 +11,6 @@ namespace lagent
 {
     class Program
     {
-        private static void Receive(Socket client)
-        {
-           
-        }
         private static void ReceiveLocalCallback(IAsyncResult ar)
         {
             try
@@ -28,8 +24,9 @@ namespace lagent
 
                 if (received > 0)
                 {
-                    Console.WriteLine("sending {0} bytes home", received);
+                    Console.WriteLine("-H-> {0} bytes", received);
                     socketHome.Send(state.buffer, received, SocketFlags.None);
+                    Thread.Sleep(1000);
                 }
 
             }
@@ -53,17 +50,16 @@ namespace lagent
 
                 if (received > 0)
                 {
-                    Console.WriteLine("sending {0} bytes to agent", received);
 
                     if (!connectedHome)
                     {
                         connectLocally(ipeLocal);
                         connectedHome = true;
                     }
-
+                    Console.WriteLine("<-S- {0} bytes", received);
 
                     socketLocal.Send(state.buffer, received, SocketFlags.None);
-
+                    Thread.Sleep(1000);
                 }
             }
             catch (Exception e)
@@ -75,19 +71,15 @@ namespace lagent
         static Socket socketHome = null;
         static Socket socketLocal = null;
 
-        static IPEndPoint ipeLocal;
+        static IPEndPoint ipeLocal = null;
+        static IPEndPoint ipeHome = null;
+
+        public static bool shutdown { get; private set; } = false;
 
         static void Main(string[] args)
         {
-
-            Console.WriteLine("args, len: " + args.Length);
-            for (int i=0; i<args.Length; i++)
-            {
-                Console.WriteLine("args[{0}]: {1}", i, args[i]);
-            }
-
             ipeLocal = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 3389);
-            IPEndPoint ipeHome = new IPEndPoint(IPAddress.Parse("10.100.1.254"), 11000);
+            ipeHome = new IPEndPoint(IPAddress.Parse("10.100.1.254"), 11000);
 
             if (args.Length >= 1)
             {
@@ -121,31 +113,48 @@ namespace lagent
                 }
             }
 
-            connectHome(ipeHome);
+            connectHome();
 
-
-            
-
+            try
+            {
+                Thread t = new Thread(new ThreadStart(ThreadHandlerSocketHome));
+                t.Start();
+            }
+            catch (Exception e)
+            {
+                Console.Write("e: " + e.ToString());
+            }
             try
             {
                 Console.WriteLine("press any key to exit...");
                 Console.ReadLine();
+                shutdown = true;
             }
             catch (Exception e)
             {
                 Console.Write("e: " + e.ToString());
             }
         }
+        public static void ThreadHandlerSocketHome()
+        {
+            while (!shutdown)
+            {
+                if (socketHome.Poll(1000, SelectMode.SelectRead))
+                    connectHome();
+                Thread.Sleep(250);
+            }
+        }
+
 
         private static void connectLocally(IPEndPoint ipe)
         {
             try
             {
                 socketLocal = new Socket(SocketType.Stream, ProtocolType.Tcp);
-                Console.WriteLine("Connecting to local service: {0}:{1}", ipe.Address.ToString(), ipe.Port);
+                socketLocal.NoDelay = true;
 
+                Console.WriteLine("Connecting to local service: {0}:{1}", ipe.Address.ToString(), ipe.Port);
                 socketLocal.Connect(ipe);
-                Console.WriteLine("connecting RDP done");
             }
             catch (ArgumentNullException ae)
             {
@@ -174,16 +183,18 @@ namespace lagent
                 Console.WriteLine(e.ToString());
             }
         }
-        private static void connectHome(IPEndPoint ipe)
+        static StateObject stateHome = null;
+        private static void connectHome()
         {
-            Console.Write("calling home: {0}:{1}", ipe.Address.ToString(), ipe.Port);
+            Console.Write("calling home: {0}:{1}", ipeHome.Address.ToString(), ipeHome.Port);
             socketHome = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            socketHome.NoDelay = true;
 
             while (true)
             {
                 try
                 {
-                    socketHome.Connect(ipe);
+                    socketHome.Connect(ipeHome);
                     Console.WriteLine(" connection established successfully.");
                     break;
                 }
@@ -196,12 +207,12 @@ namespace lagent
 
             try
             {
-                StateObject state = new StateObject();
-                state.workSocket = socketHome;
+                stateHome = new StateObject();
+                stateHome.workSocket = socketHome;
 
                 // Begin receiving the data from the remote device.  
-                socketHome.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-                    new AsyncCallback(ReceiveHomeCallback), state);
+                socketHome.BeginReceive(stateHome.buffer, 0, StateObject.BufferSize, 0,
+                    new AsyncCallback(ReceiveHomeCallback), stateHome);
             }
             catch (Exception e)
             {
