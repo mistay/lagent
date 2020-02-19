@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace lagent
@@ -37,6 +38,7 @@ namespace lagent
                 Console.WriteLine(e.ToString());
             }
         }
+        private static bool connectedHome=false;
 
         private static void ReceiveHomeCallback(IAsyncResult ar)
         {
@@ -52,6 +54,14 @@ namespace lagent
                 if (received > 0)
                 {
                     Console.WriteLine("sending {0} bytes to agent", received);
+
+                    if (!connectedHome)
+                    {
+                        connectLocally(ipeLocal);
+                        connectedHome = true;
+                    }
+
+
                     socketLocal.Send(state.buffer, received, SocketFlags.None);
 
                 }
@@ -65,6 +75,8 @@ namespace lagent
         static Socket socketHome = null;
         static Socket socketLocal = null;
 
+        static IPEndPoint ipeLocal;
+
         static void Main(string[] args)
         {
 
@@ -74,7 +86,7 @@ namespace lagent
                 Console.WriteLine("args[{0}]: {1}", i, args[i]);
             }
 
-            IPEndPoint ipeLocal = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 3389);
+            ipeLocal = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 3389);
             IPEndPoint ipeHome = new IPEndPoint(IPAddress.Parse("10.100.1.254"), 11000);
 
             if (args.Length >= 1)
@@ -111,7 +123,6 @@ namespace lagent
 
             connectHome(ipeHome);
 
-            connectLocally(ipeLocal);
 
             
 
@@ -131,7 +142,7 @@ namespace lagent
             try
             {
                 socketLocal = new Socket(SocketType.Stream, ProtocolType.Tcp);
-                Console.WriteLine("connecting to local RDP...");
+                Console.WriteLine("Connecting to local service: {0}:{1}", ipe.Address.ToString(), ipe.Port);
 
                 socketLocal.Connect(ipe);
                 Console.WriteLine("connecting RDP done");
@@ -155,10 +166,6 @@ namespace lagent
                 state.workSocket = socketLocal;
 
                 // Begin receiving the data from the remote device.  
-                Console.WriteLine("BeginReceive RDP...");
-
-
-
                 socketLocal.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
                     new AsyncCallback(ReceiveLocalCallback), state);
             }
@@ -169,24 +176,22 @@ namespace lagent
         }
         private static void connectHome(IPEndPoint ipe)
         {
-            try
+            Console.Write("calling home: {0}:{1}", ipe.Address.ToString(), ipe.Port);
+            socketHome = new Socket(SocketType.Stream, ProtocolType.Tcp);
+
+            while (true)
             {
-                socketHome = new Socket(SocketType.Stream, ProtocolType.Tcp);
-                Console.WriteLine("connecting...");
-                socketHome.Connect(ipe);
-                Console.WriteLine("connecting done");
-            }
-            catch (ArgumentNullException ae)
-            {
-                Console.WriteLine("ArgumentNullException : {0}", ae.ToString());
-            }
-            catch (SocketException se)
-            {
-                Console.WriteLine("SocketException : {0}", se.ToString());
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine("Unexpected exception : {0}", e.ToString());
+                try
+                {
+                    socketHome.Connect(ipe);
+                    Console.WriteLine(" connection established successfully.");
+                    break;
+                }
+                catch (Exception e)
+                {
+                }
+                Console.Write(".");
+                Thread.Sleep(3);
             }
 
             try
@@ -195,8 +200,6 @@ namespace lagent
                 state.workSocket = socketHome;
 
                 // Begin receiving the data from the remote device.  
-                Console.WriteLine("BeginReceive...");
-
                 socketHome.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
                     new AsyncCallback(ReceiveHomeCallback), state);
             }
