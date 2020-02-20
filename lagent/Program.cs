@@ -11,75 +11,106 @@ namespace lagent
 {
     class Program
     {
-        private static void ReceiveLocalCallback(IAsyncResult ar)
-        {
-            try
-            {
-                StateObject state = (StateObject)ar.AsyncState;
-
-                int received = state.workSocket.EndReceive(ar);
-                state.workSocket
-                    .BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-                    new AsyncCallback(ReceiveLocalCallback), state);
-
-                if (received > 0)
-                {
-                    Console.WriteLine("-H-> {0} bytes", received);
-                    socketHome.Send(state.buffer, received, SocketFlags.None);
-                    Thread.Sleep(1000);
-                }
-
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e.ToString());
-            }
-        }
-        private static bool connectedHome=false;
-
-        private static void ReceiveHomeCallback(IAsyncResult ar)
-        {
-            try
-            {
-                StateObject state = (StateObject)ar.AsyncState;
-
-                int received = state.workSocket.EndReceive(ar);
-                state.workSocket
-                    .BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-                    new AsyncCallback(ReceiveHomeCallback), state);
-
-                if (received > 0)
-                {
-
-                    if (!connectedHome)
-                    {
-                        connectLocally(ipeLocal);
-                        connectedHome = true;
-                    }
-                    Console.WriteLine("<-S- {0} bytes", received);
-
-                    socketLocal.Send(state.buffer, received, SocketFlags.None);
-                    Thread.Sleep(1000);
-                }
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e.ToString());
-            }
-        }
-
-        static Socket socketHome = null;
-        static Socket socketLocal = null;
-
-        static IPEndPoint ipeLocal = null;
         static IPEndPoint ipeHome = null;
+        private static IPEndPoint ipeLocalService = null;
 
-        public static bool shutdown { get; private set; } = false;
+        static bool connectedToLocalService = false;
+        static bool tryConnectLocalService = false;
+
+        static Socket socketHome;
+        static Socket socketLocalService;
+
+        public static void localServiceHandler()
+        {
+            byte[] buffer = new byte[1024];
+            while (true)
+                try
+                {
+                    socketLocalService = new Socket(AddressFamily.InterNetwork,
+                    SocketType.Stream, ProtocolType.Tcp);
+
+                    while (!tryConnectLocalService)
+                        Thread.Sleep(100);
+                
+                    socketLocalService.Connect(ipeLocalService);
+
+                    Console.WriteLine("connected to local service {0}",
+                        socketLocalService.RemoteEndPoint.ToString());
+
+                    int bytesRec = 0;
+                    try
+                    {
+                        while ((bytesRec = socketLocalService.Receive(buffer)) > 0)
+                        {
+                            Console.WriteLine("-H-> {0} bytes", bytesRec);
+                            int bytesSent = socketHome.Send(buffer, bytesRec, SocketFlags.None);
+                        }
+                    } catch (Exception ex)
+                    {
+                        // ignore
+                    }
+
+                    tryConnectLocalService = false;
+
+                    if (socketLocalService.Connected)
+                    {
+                        socketLocalService.Shutdown(SocketShutdown.Both);
+                        socketLocalService.Close();
+                    }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine(e.ToString());
+                }
+        }
+
+        public static void connectHome()
+        {
+            byte[] buffer = new byte[1024];
+
+            while (true)
+            {
+                Console.Write("connecting home {0}: ",
+                        ipeHome.ToString());
+                while (true)
+                {
+                    
+                    try
+                    {
+                        socketHome = new Socket(AddressFamily.InterNetwork,
+                        SocketType.Stream, ProtocolType.Tcp);
+
+
+                        socketHome.Connect(ipeHome);
+                        Console.WriteLine("connected.");
+
+                        int bytesRec = 0;
+                        while ((bytesRec = socketHome.Receive(buffer)) > 0)
+                        {
+                            if (!connectedToLocalService)
+                                tryConnectLocalService = true;
+
+                            while (!socketLocalService.Connected)
+                                Thread.Sleep(100);
+
+                            Console.WriteLine("<S-- {0} bytes", bytesRec);
+
+                            int bytesSent = socketLocalService.Send(buffer, bytesRec, SocketFlags.None);
+                        }
+                        socketHome.Shutdown(SocketShutdown.Both);
+                        socketHome.Close();
+                    }
+                    catch (Exception e)
+                    {
+                        Console.Write(".");
+                    }
+                }
+                Thread.Sleep(1000);
+            }
+        }
 
         static void Main(string[] args)
         {
-            ipeLocal = new IPEndPoint(IPAddress.Parse("127.0.0.1"), 3389);
-            ipeHome = new IPEndPoint(IPAddress.Parse("10.100.1.254"), 11000);
 
             if (args.Length >= 1)
             {
@@ -89,7 +120,7 @@ namespace lagent
                     IPAddress iPAddress = IPAddress.Parse(s[0]);
                     int p = int.Parse(s[1]);
 
-                    ipeLocal = new IPEndPoint(iPAddress, p);
+                    ipeLocalService = new IPEndPoint(iPAddress, p);
                 }
                 catch (Exception e)
                 {
@@ -113,111 +144,10 @@ namespace lagent
                 }
             }
 
+            Thread t = new Thread(new ThreadStart(localServiceHandler));
+            t.Start();
+
             connectHome();
-
-            try
-            {
-                Thread t = new Thread(new ThreadStart(ThreadHandlerSocketHome));
-                t.Start();
-            }
-            catch (Exception e)
-            {
-                Console.Write("e: " + e.ToString());
-            }
-            try
-            {
-                Console.WriteLine("press any key to exit...");
-                Console.ReadLine();
-                shutdown = true;
-            }
-            catch (Exception e)
-            {
-                Console.Write("e: " + e.ToString());
-            }
-        }
-        public static void ThreadHandlerSocketHome()
-        {
-            while (!shutdown)
-            {
-                if (socketHome.Poll(1000, SelectMode.SelectRead))
-                    connectHome();
-                Thread.Sleep(250);
-            }
-        }
-
-
-        private static void connectLocally(IPEndPoint ipe)
-        {
-            try
-            {
-                socketLocal = new Socket(SocketType.Stream, ProtocolType.Tcp);
-                socketLocal.NoDelay = true;
-
-                Console.WriteLine("Connecting to local service: {0}:{1}", ipe.Address.ToString(), ipe.Port);
-                socketLocal.Connect(ipe);
-            }
-            catch (ArgumentNullException ae)
-            {
-                Console.WriteLine("ArgumentNullException : {0}", ae.ToString());
-            }
-            catch (SocketException se)
-            {
-                Console.WriteLine("SocketException : {0}", se.ToString());
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine("Unexpected exception : {0}", e.ToString());
-            }
-            try
-            {
-
-                StateObject state = new StateObject();
-                state.workSocket = socketLocal;
-
-                // Begin receiving the data from the remote device.  
-                socketLocal.BeginReceive(state.buffer, 0, StateObject.BufferSize, 0,
-                    new AsyncCallback(ReceiveLocalCallback), state);
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e.ToString());
-            }
-        }
-        static StateObject stateHome = null;
-        private static void connectHome()
-        {
-            Console.Write("calling home: {0}:{1}", ipeHome.Address.ToString(), ipeHome.Port);
-            socketHome = new Socket(SocketType.Stream, ProtocolType.Tcp);
-            socketHome.NoDelay = true;
-
-            while (true)
-            {
-                try
-                {
-                    socketHome.Connect(ipeHome);
-                    Console.WriteLine(" connection established successfully.");
-                    break;
-                }
-                catch (Exception e)
-                {
-                }
-                Console.Write(".");
-                Thread.Sleep(3);
-            }
-
-            try
-            {
-                stateHome = new StateObject();
-                stateHome.workSocket = socketHome;
-
-                // Begin receiving the data from the remote device.  
-                socketHome.BeginReceive(stateHome.buffer, 0, StateObject.BufferSize, 0,
-                    new AsyncCallback(ReceiveHomeCallback), stateHome);
-            }
-            catch (Exception e)
-            {
-                Console.WriteLine(e.ToString());
-            }
         }
     }
 }
